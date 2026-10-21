@@ -1,0 +1,102 @@
+// Função serverless do Vercel. Fica disponível automaticamente em: /api/solicitacoes
+// Usa a variável de ambiente DATABASE_URL (connection string do Neon).
+// Opcionalmente envia um e-mail de notificação via Resend (RESEND_API_KEY + ADMIN_EMAIL).
+
+const { neon } = require('@neondatabase/serverless');
+
+const TIPOS = {
+  'lentidao': 'PC lento / travando',
+  'nao-liga': 'Não liga / desliga sozinho',
+  'virus': 'Vírus ou malware',
+  'upgrade': 'Upgrade de peças (memória, SSD)',
+  'outro': 'Outro'
+};
+
+const SERVICOS = {
+  'otimizacao': 'Otimização',
+  'formatacao': 'Formatação',
+  'manutencao': 'Manutenção',
+  'otimizacao-formatacao': 'Combo: Otimização + Formatação',
+  'formatacao-manutencao': 'Combo: Formatação + Manutenção',
+  'combo-completo': 'Combo completo',
+  'nao-sei': 'Não sei / preciso de diagnóstico'
+};
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function esc(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function enviarEmailNotificacao({ nome, telefone, email, servico, tipo, descricao }) {
+  // Se as variáveis não estiverem configuradas, simplesmente não envia (sem quebrar o resto).
+  if (!process.env.RESEND_API_KEY || !process.env.ADMIN_EMAIL) return;
+
+  try {
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: 'SpeedFlex <onboarding@resend.dev>',
+        to: [process.env.ADMIN_EMAIL],
+        reply_to: email,
+        subject: `Nova solicitação: ${String(nome).replace(/[\r\n]+/g, ' ')}`,
+        html: `
+          <h2>Nova solicitação de atendimento</h2>
+          <p><b>Nome:</b> ${esc(nome)}</p>
+          <p><b>Telefone:</b> ${esc(telefone)}</p>
+          <p><b>E-mail:</b> ${esc(email)}</p>
+          <p><b>Serviço desejado:</b> ${esc(SERVICOS[servico] || servico)}</p>
+          <p><b>Tipo de problema:</b> ${esc(TIPOS[tipo] || tipo)}</p>
+          <p><b>Descrição:</b><br>${esc(descricao)}</p>
+        `
+      })
+    });
+  } catch (err) {
+    // Falha ao notificar não deve derrubar o salvamento da solicitação.
+    console.error('Erro ao enviar e-mail de notificação:', err);
+  }
+}
+
+module.exports = async function handler(req, res) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'Método não permitido' });
+  }
+
+  const { nome, telefone, email, servico, tipo, descricao } = req.body || {};
+
+  if (!nome || !telefone || !email || !servico || !tipo || !descricao) {
+    return res.status(400).json({ error: 'Preencha todos os campos.' });
+  }
+
+  if (!EMAIL_REGEX.test(String(email).trim()) || String(email).length > 254) {
+    return res.status(400).json({ error: 'Informe um e-mail válido.' });
+  }
+
+  if (!SERVICOS[servico]) {
+    return res.status(400).json({ error: 'Serviço inválido.' });
+  }
+
+  const emailLimpo = String(email).trim().toLowerCase();
+
+  try {
+    const sql = neon(process.env.DATABASE_URL);
+    await sql`
+      INSERT INTO solicitacoes (nome, telefone, email, servico, tipo_problema, descricao)
+      VALUES (${nome}, ${telefone}, ${emailLimpo}, ${servico}, ${tipo}, ${descricao})
+    `;
+    await enviarEmailNotificacao({ nome, telefone, email: emailLimpo, servico, tipo, descricao });
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('Erro ao gravar solicitação:', err);
+    return res.status(500).json({ error: 'Não foi possível salvar a solicitação. Tente novamente.' });
+  }
+};
