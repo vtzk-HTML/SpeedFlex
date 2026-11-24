@@ -1,93 +1,223 @@
-// Função serverless do Vercel. Fica disponível em: /api/chat
-// Usa a variável de ambiente GROQ_API_KEY (crie a chave em console.groq.com).
-// Opcional: GROQ_MODEL (padrão: llama-3.3-70b-versatile).
 
-const SYSTEM_PROMPT = `Você é o Assistente de TI da SpeedFlex, assistência técnica de PCs e notebooks em Cambé, PR.
+// Vercel Serverless Function — SpeedFlex AI
+// Integração com a API da Groq
 
-SUA ÚNICA FUNÇÃO
-Ajudar o cliente com dúvidas e problemas BÁSICOS de computador e notebook (principalmente Windows), como: PC lento ou travando, demora para ligar, PC que não liga ou desliga sozinho, tela azul, programas que não abrem ou fecham sozinhos, pouco espaço no disco, aquecimento e barulho de ventoinha, suspeita de vírus, internet/Wi-Fi no computador, impressora, mouse/teclado/som que não funcionam, atualizações do Windows e backup.
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 
-COMO RESPONDER
-- Português do Brasil, tom amigável e sem jargão. Se usar um termo técnico, explique em poucas palavras.
-- Respostas curtas (até uns 6 linhas). Dê 1 a 3 passos simples por vez, numerados como "1)", "2)", e pergunte se resolveu ou o que apareceu.
-- Se faltar informação, faça UMA pergunta curta (ex.: é notebook ou PC de mesa? qual versão do Windows? aparece alguma mensagem de erro?).
-- Escreva em texto simples: não use markdown, asteriscos, negrito, títulos ou tabelas.
+const DEFAULT_MODEL = "openai/gpt-oss-20b";
 
-SEGURANÇA
-- Só oriente ações simples e seguras. NUNCA oriente: abrir o equipamento, mexer na BIOS, editar o registro do Windows, desativar o antivírus, baixar programas "limpadores", ativadores ou cracks, usar comandos que apagam dados, nem formatar.
-- Antes de qualquer mudança maior, lembre de fazer backup dos arquivos importantes.
-- Não dê diagnóstico definitivo: explique que são hipóteses comuns e que a avaliação real é feita pela equipe técnica.
-- Não peça senhas, dados bancários ou documentos.
+const SYSTEM_PROMPT = `
+Você é o assistente virtual oficial da SpeedFlex,
+uma assistência técnica especializada em computadores.
 
-QUANDO ENCAMINHAR PARA A EQUIPE
-Se o problema parecer sério ou fora do básico (cheiro de queimado, superaquecimento forte, barulho no HD, não liga mesmo após testes simples, suspeita de vírus grave, perda de dados, suspeita de defeito em peça) ou se o cliente pedir para a SpeedFlex resolver, oriente a solicitar atendimento pelo formulário na seção "Contato" do site. Informe que, depois do envio, a equipe administrativa designa um técnico de TI para dar suporte.
+SUA IDENTIDADE:
+- Você representa a SpeedFlex.
+- Seu atendimento deve ser profissional, educado e prestativo.
+- Responda sempre em português brasileiro.
+- Seja objetivo, claro e natural.
 
-FORA DO ESCOPO
-Para qualquer assunto que não seja dúvida básica de TI (preços, orçamentos, prazos, garantia, pagamentos, programação, assuntos gerais), responda educadamente que aqui você só tira dúvidas básicas de informática e que os serviços e valores estão na tabela de preços do site ou podem ser vistos no formulário de atendimento. Nunca invente valores, prazos ou informações da empresa.`;
+SUAS ESPECIALIDADES:
+- Computadores e notebooks.
+- Windows e sistemas operacionais.
+- Lentidão e travamentos.
+- Otimização de computadores.
+- Formatação.
+- Manutenção preventiva e corretiva.
+- Hardware e periféricos.
+- Problemas de desempenho.
+- Segurança digital.
 
-const MAX_MENSAGENS = 12;
-const MAX_CARACTERES = 1000;
+ATENDIMENTO:
+- Entenda o problema antes de sugerir uma solução.
+- Faça perguntas simples quando precisar de mais informações.
+- Explique os procedimentos passo a passo.
+- Utilize linguagem acessível.
+- Apresente os serviços da SpeedFlex naturalmente quando forem relevantes.
+- Não insista em vendas.
+
+REGRAS:
+- Nunca invente preços ou promoções.
+- Nunca invente prazos ou garantias.
+- Não invente endereço ou telefone.
+- Quando não souber alguma informação comercial,
+  oriente o cliente a consultar os canais oficiais.
+- Não solicite senhas ou informações bancárias.
+- Não prometa diagnósticos definitivos sem avaliação técnica.
+- Oriente a procurar assistência presencial quando necessário.
+- Nunca recomende abrir fontes de alimentação ou
+  equipamentos que possam oferecer risco elétrico.
+
+OBJETIVO:
+Oferecer uma experiência de atendimento eficiente,
+ajudando o cliente a compreender seus problemas
+e conhecer as soluções oferecidas pela SpeedFlex.
+`;
 
 module.exports = async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).json({ error: 'Método não permitido' });
+
+  // Aceitar somente requisições POST
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
+
+    return res.status(405).json({
+      error: "Método não permitido."
+    });
   }
 
-  if (!process.env.GROQ_API_KEY) {
-    return res.status(500).json({ error: 'Chat indisponível no momento.' });
+  // Buscar chave privada da Groq
+  const apiKey = process.env.GROQ_API_KEY;
+
+  if (!apiKey) {
+    console.error("GROQ_API_KEY não configurada.");
+
+    return res.status(500).json({
+      error: "A chave da API da Groq não foi configurada."
+    });
   }
-
-  const entrada = (req.body && req.body.messages) || [];
-  if (!Array.isArray(entrada) || entrada.length === 0) {
-    return res.status(400).json({ error: 'Envie uma mensagem.' });
-  }
-
-  // Sanitiza o histórico: só user/assistant, texto limitado, últimas N mensagens.
-  const historico = entrada
-    .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
-    .slice(-MAX_MENSAGENS)
-    .map(m => ({ role: m.role, content: m.content.trim().slice(0, MAX_CARACTERES) }));
-
-  if (historico.length === 0 || historico[historico.length - 1].role !== 'user') {
-    return res.status(400).json({ error: 'Envie uma mensagem.' });
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20000);
 
   try {
-    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-        messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...historico],
-        temperature: 0.4,
-        max_tokens: 500
-      })
+
+    const body = req.body || {};
+
+    const incomingMessages = Array.isArray(body.messages)
+      ? body.messages
+      : [];
+
+    // Validar mensagens recebidas
+    const messages = incomingMessages
+
+      .filter((item) =>
+        item &&
+        (
+          item.role === "user" ||
+          item.role === "assistant"
+        ) &&
+        typeof item.content === "string" &&
+        item.content.trim().length > 0
+      )
+
+      .slice(-16)
+
+      .map((item) => ({
+        role: item.role,
+        content: item.content.trim().slice(0, 5000)
+      }));
+
+    if (messages.length === 0) {
+      return res.status(400).json({
+        error: "Envie uma mensagem para começar."
+      });
+    }
+
+    // Controle de tempo de resposta
+    const controller = new AbortController();
+
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 25000);
+
+    let groqResponse;
+
+    try {
+
+      // Enviar solicitação para a Groq
+      groqResponse = await fetch(GROQ_API_URL, {
+
+        method: "POST",
+
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+
+        body: JSON.stringify({
+
+          model: process.env.GROQ_MODEL || DEFAULT_MODEL,
+
+          messages: [
+            {
+              role: "system",
+              content: SYSTEM_PROMPT
+            },
+            ...messages
+          ],
+
+          max_completion_tokens: 700,
+
+          temperature: 0.6
+
+        }),
+
+        signal: controller.signal
+
+      });
+
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    // Interpretar resposta
+    const data = await groqResponse.json().catch(() => ({}));
+
+    // Verificar erros da Groq
+    if (!groqResponse.ok) {
+
+      console.error("Erro Groq:", {
+        status: groqResponse.status,
+        message: data.error?.message
+      });
+
+      if (groqResponse.status === 401) {
+        return res.status(502).json({
+          error: "Chave da Groq inválida. Verifique a configuração."
+        });
+      }
+
+      if (groqResponse.status === 429) {
+        return res.status(429).json({
+          error: "Limite de solicitações atingido. Tente novamente em instantes."
+        });
+      }
+
+      return res.status(502).json({
+        error: "Não foi possível obter uma resposta da IA."
+      });
+    }
+
+    // Extrair resposta
+    const reply = data.choices?.[0]?.message?.content;
+
+    if (
+      typeof reply !== "string" ||
+      !reply.trim()
+    ) {
+
+      console.error("Resposta vazia ou inesperada da Groq.");
+
+      return res.status(502).json({
+        error: "A IA retornou uma resposta vazia."
+      });
+    }
+
+    // Retornar resposta ao site
+    return res.status(200).json({
+      reply: reply.trim()
     });
 
-    if (!resp.ok) {
-      const detalhe = await resp.text();
-      console.error('Erro Groq:', resp.status, detalhe);
-      return res.status(502).json({ error: 'Não consegui responder agora. Tente novamente.' });
+  } catch (error) {
+
+    console.error("Erro SpeedFlex AI:", error);
+
+    if (error.name === "AbortError") {
+      return res.status(504).json({
+        error: "A resposta demorou demais. Tente novamente."
+      });
     }
 
-    const data = await resp.json();
-    const reply = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    if (!reply) {
-      return res.status(502).json({ error: 'Não consegui responder agora. Tente novamente.' });
-    }
-    return res.status(200).json({ reply: reply.trim() });
-  } catch (err) {
-    console.error('Erro no chat:', err);
-    return res.status(500).json({ error: 'Não consegui responder agora. Tente novamente.' });
-  } finally {
-    clearTimeout(timer);
+    return res.status(500).json({
+      error: "Erro interno ao processar sua mensagem."
+    });
+
   }
+
 };
